@@ -1,5 +1,6 @@
 import os
 import sys
+import subprocess
 
 from flask import Flask, jsonify, request, abort, send_file
 from dotenv import load_dotenv
@@ -14,21 +15,35 @@ load_dotenv()
 
 
 machine = TocMachine(
-    states=["user", "state1", "state2"],
+    states=["user", "check", "solve", "response"],
     transitions=[
         {
-            "trigger": "advance",
+            "trigger": "received messengs",
             "source": "user",
-            "dest": "state1",
-            "conditions": "is_going_to_state1",
+            "dest": "check",
         },
         {
-            "trigger": "advance",
-            "source": "user",
-            "dest": "state2",
-            "conditions": "is_going_to_state2",
+            "trigger": "is a sudoku?",
+            "source": "check",
+            "dest": "response",
+            "conditions": "no",
         },
-        {"trigger": "go_back", "source": ["state1", "state2"], "dest": "user"},
+        {
+            "trigger": "is a sudoku?",
+            "source": "check",
+            "dest": "solve",
+            "conditions": "yes",
+        },
+        {
+            "trigger": "finished",
+            "source": "solve",
+            "dest": "response",
+        },
+        {
+            "trigger": "go_back",
+            "source": ["response"],
+            "dest": "user",
+        },
     ],
     initial="user",
     auto_transitions=False,
@@ -114,6 +129,49 @@ def show_fsm():
     machine.get_graph().draw("fsm.png", prog="dot", format="png")
     return send_file("fsm.png", mimetype="image/png")
 
+@app.route("/", methods=["POST"])
+def sudoku():
+    signature = request.headers["X-Line-Signature"]
+    # get request body as text
+    body = request.get_data(as_text=True)
+    app.logger.info("Request body: " + body)
+
+    # parse webhook body
+    try:
+        events = parser.parse(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+
+    # if event is MessageEvent and message is TextMessage, then echo text
+    for event in events:
+        if not isinstance(event, MessageEvent):
+            continue
+        if not isinstance(event.message, TextMessage):
+            continue
+
+        flag = False
+        sdk = ""
+        for c in event.message.text:
+            if (c == ' ' or c == '\n'):
+                continue
+            if ('0' <= c and c <= '9'):
+                sdk += c + ' '
+            else:
+                flag = True
+                break
+
+        if (flag or len(sdk) != 81 * 2):
+            msg = "Please give a sudoku problem!!"
+        else:
+            p = subprocess.Popen(['./solve'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, encoding = 'utf-8')
+            msg = p.communicate(sdk)[0]
+
+        print(msg)
+        line_bot_api.reply_message(
+            event.reply_token, TextSendMessage(text=msg)
+        )
+
+    return "OK"
 
 if __name__ == "__main__":
     port = os.environ.get("PORT", 8000)
